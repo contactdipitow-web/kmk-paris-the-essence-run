@@ -1,0 +1,301 @@
+name: Launch KMK Paris on iOS Simulator V4
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/ios-simulator-launch-v4.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kmk-ios-simulator-launch-v4
+  cancel-in-progress: false
+
+jobs:
+  launch-ios:
+    name: Build and launch KMK on a fresh iPhone Simulator
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      CI: "1"
+      EXPO_NO_GIT_STATUS: "1"
+      BUNDLE_ID: com.kmkparis.theessencerun
+      DERIVED_DATA: ${{ github.workspace }}/build/DerivedData
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate Expo project
+        run: |
+          npx tsc --noEmit
+          npx expo-doctor@latest
+
+      - name: Generate native iOS project
+        run: npx expo prebuild --platform ios --clean --no-install
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Discover Xcode workspace and scheme
+        id: native
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORKSPACE="$(find ios -maxdepth 1 -name '*.xcworkspace' -print -quit)"
+          test -n "$WORKSPACE" || { echo "::error::No Xcode workspace generated"; exit 1; }
+          xcodebuild -workspace "$WORKSPACE" -list -json > "$RUNNER_TEMP/xcode-list.json"
+          SCHEME="$(python3 - <<'PY'
+          import json, os
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'xcode-list.json')) as handle:
+              data = json.load(handle)
+          schemes = data.get('workspace', {}).get('schemes', [])
+          if not schemes:
+              raise SystemExit('No Xcode scheme found')
+          print(schemes[0])
+          PY
+          )"
+          echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+          echo "Workspace: $WORKSPACE"
+          echo "Scheme: $SCHEME"
+
+      - name: Create and boot a fresh iPhone Simulator
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun simctl list runtimes -j > "$RUNNER_TEMP/runtimes.json"
+          xcrun simctl list devicetypes -j > "$RUNNER_TEMP/devicetypes.json"
+
+          read -r RUNTIME_ID RUNTIME_NAME DEVICE_TYPE_ID DEVICE_NAME <<< "$(python3 - <<'PY'
+          import json, os, re
+          temp = os.environ['RUNNER_TEMP']
+          with open(os.path.join(temp, 'runtimes.json')) as handle:
+              runtime_data = json.load(handle)
+          with open(os.path.join(temp, 'devicetypes.json')) as handle:
+              device_data = json.load(handle)
+
+          runtimes = []
+          for runtime in runtime_data.get('runtimes', []):
+              name = runtime.get('name', '')
+              if not name.startswith('iOS') or not runtime.get('isAvailable', False):
+                  continue
+              match = re.search(r'(\d+)(?:\.(\d+))?', name)
+              version = (int(match.group(1)), int(match.group(2) or 0)) if match else (0, 0)
+              runtimes.append((version, runtime['identifier'], name))
+          if not runtimes:
+              raise SystemExit('No available iOS runtime')
+          _, runtime_id, runtime_name = sorted(runtimes, reverse=True)[0]
+
+          phones = [d for d in device_data.get('devicetypes', []) if d.get('name', '').startswith('iPhone')]
+          if not phones:
+              raise SystemExit('No iPhone device type')
+          preferred = [d for d in phones if 'Pro' in d['name'] and 'Max' not in d['name']]
+          chosen = sorted(preferred or phones, key=lambda d: d['name'], reverse=True)[0]
+          print(runtime_id, runtime_name.replace(' ', '_'), chosen['identifier'], chosen['name'].replace(' ', '_'))
+          PY
+          )"
+
+          RUNTIME_NAME="${RUNTIME_NAME//_/ }"
+          DEVICE_NAME="${DEVICE_NAME//_/ }"
+          SIMULATOR_NAME="KMK Paris CI iPhone $GITHUB_RUN_ID"
+          UDID="$(xcrun simctl create "$SIMULATOR_NAME" "$DEVICE_TYPE_ID" "$RUNTIME_ID")"
+          test -n "$UDID" || { echo "::error::Unable to create the iPhone Simulator"; exit 1; }
+
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "name=$DEVICE_NAME" >> "$GITHUB_OUTPUT"
+          echo "runtime=$RUNTIME_NAME" >> "$GITHUB_OUTPUT"
+          echo "Created: $DEVICE_NAME / $RUNTIME_NAME / $UDID"
+
+          SIMULATOR_UDID="$UDID" python3 - <<'PY'
+          import json, os, subprocess, sys, time
+          udid = os.environ['SIMULATOR_UDID']
+
+          try:
+              boot = subprocess.run(
+                  ['xcrun', 'simctl', 'boot', udid],
+                  text=True,
+                  capture_output=True,
+                  timeout=30,
+              )
+              if boot.returncode not in (0,):
+                  combined = (boot.stdout or '') + (boot.stderr or '')
+                  if 'current state: Booted' not in combined and 'Unable to boot device in current state: Booted' not in combined:
+                      print(combined)
+          except subprocess.TimeoutExpired:
+              print('simctl boot command timed out; polling simulator state directly.')
+
+          deadline = time.time() + 240
+          last_state = None
+          while time.time() < deadline:
+              result = subprocess.run(['xcrun', 'simctl', 'list', 'devices', '-j'], text=True, capture_output=True)
+              data = json.loads(result.stdout)
+              state = None
+              for devices in data.get('devices', {}).values():
+                  for device in devices:
+                      if device.get('udid') == udid:
+                          state = device.get('state')
+                          break
+                  if state:
+                      break
+              if state != last_state:
+                  print(f'Simulator state: {state}')
+                  last_state = state
+              if state == 'Booted':
+                  ready = subprocess.run(
+                      ['xcrun', 'simctl', 'spawn', udid, 'launchctl', 'print', 'system'],
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL,
+                  )
+                  if ready.returncode == 0:
+                      print('Simulator services are ready.')
+                      sys.exit(0)
+              time.sleep(3)
+
+          subprocess.run(['xcrun', 'simctl', 'diagnose', '-b'], check=False)
+          raise SystemExit('Fresh iPhone Simulator did not become ready within the bounded startup window')
+          PY
+
+      - name: Build Release app for selected Simulator
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild \
+            -workspace "${{ steps.native.outputs.workspace }}" \
+            -scheme "${{ steps.native.outputs.scheme }}" \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            clean build | tee build/xcodebuild-ios-simulator.log
+
+      - name: Locate the compiled KMK application
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCTS_DIR="$DERIVED_DATA/Build/Products/Release-iphonesimulator"
+          test -d "$PRODUCTS_DIR" || { echo "::error::Release products directory not found"; exit 1; }
+
+          APP_PATH=""
+          while IFS= read -r candidate; do
+            INFO_PLIST="$candidate/Info.plist"
+            test -f "$INFO_PLIST" || continue
+            CANDIDATE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST" 2>/dev/null || true)"
+            echo "Candidate: $candidate | bundle: ${CANDIDATE_ID:-unknown}"
+            if [ "$CANDIDATE_ID" = "$BUNDLE_ID" ]; then
+              APP_PATH="$candidate"
+              break
+            fi
+          done < <(find "$PRODUCTS_DIR" -maxdepth 6 -type d -name '*.app' -print)
+
+          test -n "$APP_PATH" || {
+            echo "::error::No compiled app matches $BUNDLE_ID"
+            find "$PRODUCTS_DIR" -maxdepth 6 -type d -name '*.app' -print || true
+            exit 1
+          }
+
+          mkdir -p build/ios-launch
+          ditto -c -k --keepParent "$APP_PATH" build/ios-launch/KMK-Paris-The-Essence-Run-iOS-Simulator.app.zip
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+          echo "KMK app: $APP_PATH"
+
+      - name: Install and launch KMK Paris
+        id: launch
+        shell: bash
+        run: |
+          set -euo pipefail
+          UDID="${{ steps.simulator.outputs.udid }}"
+          APP_PATH="${{ steps.bundle.outputs.app_path }}"
+          mkdir -p build/ios-launch
+
+          xcrun simctl install "$UDID" "$APP_PATH"
+          INSTALLED_PATH="$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" app)"
+          test -d "$INSTALLED_PATH" || { echo "::error::KMK installation could not be verified"; exit 1; }
+          echo "Installed at: $INSTALLED_PATH"
+
+          set +e
+          LAUNCH_OUTPUT="$(xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" 2>&1)"
+          LAUNCH_STATUS=$?
+          set -e
+          echo "$LAUNCH_OUTPUT"
+          printf '%s\n' "$LAUNCH_OUTPUT" > build/ios-launch/launch-output.txt
+
+          if [ "$LAUNCH_STATUS" -ne 0 ]; then
+            xcrun simctl spawn "$UDID" log show --last 5m --style compact \
+              --predicate "eventMessage CONTAINS[c] '$BUNDLE_ID' OR processImagePath CONTAINS[c] 'KMK'" \
+              > build/ios-launch/simulator-error.log 2>&1 || true
+            echo "::error::KMK failed to launch with status $LAUNCH_STATUS"
+            exit "$LAUNCH_STATUS"
+          fi
+
+          PID="$(printf '%s\n' "$LAUNCH_OUTPUT" | sed -nE 's/^.*: ([0-9]+)$/\1/p' | tail -1)"
+          sleep 15
+
+          xcrun simctl io "$UDID" screenshot build/ios-launch/kmk-paris-ios-launched.png
+          xcrun simctl spawn "$UDID" log show --last 3m --style compact \
+            --predicate "eventMessage CONTAINS[c] '$BUNDLE_ID' OR processImagePath CONTAINS[c] 'KMK'" \
+            > build/ios-launch/simulator-launch.log 2>&1 || true
+
+          printf '%s\n' \
+            "Status=LAUNCHED" \
+            "Simulator=${{ steps.simulator.outputs.name }}" \
+            "Runtime=${{ steps.simulator.outputs.runtime }}" \
+            "BundleID=$BUNDLE_ID" \
+            "PID=${PID:-unknown}" \
+            "InstalledPath=$INSTALLED_PATH" \
+            "Commit=${{ github.sha }}" \
+            > build/ios-launch/launch-proof.txt
+          echo "pid=${PID:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish success summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## KMK Paris — iOS launch successful"
+            echo "- Result: compiled, installed and launched"
+            echo "- Device: ${{ steps.simulator.outputs.name }}"
+            echo "- Runtime: ${{ steps.simulator.outputs.runtime }}"
+            echo "- Bundle ID: \`$BUNDLE_ID\`"
+            echo "- Process ID: \`${{ steps.launch.outputs.pid }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload app, screenshot, proof and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmk-paris-ios-launch-v4
+          path: |
+            build/ios-launch/**
+            build/xcodebuild-ios-simulator.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Delete fresh Simulator
+        if: always()
+        shell: bash
+        run: |
+          UDID="${{ steps.simulator.outputs.udid }}"
+          if [ -n "$UDID" ]; then
+            xcrun simctl shutdown "$UDID" 2>/dev/null || true
+            xcrun simctl delete "$UDID" 2>/dev/null || true
+          fi
