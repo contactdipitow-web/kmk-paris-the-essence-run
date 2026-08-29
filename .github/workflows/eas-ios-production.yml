@@ -1,0 +1,117 @@
+name: Build signed KMK Paris iOS app with EAS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/eas-ios-production.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kmk-ios-production-eas
+  cancel-in-progress: false
+
+jobs:
+  build-ios-production:
+    name: Build signed iOS production app
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      CI: "1"
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EXPO_NO_GIT_STATUS: "1"
+
+    steps:
+      - name: Checkout KMK Paris
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Verify Expo authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPO_TOKEN:-}" ]; then
+            echo "::error title=Expo authentication missing::Repository secret EXPO_TOKEN is not configured."
+            exit 2
+          fi
+          npx --yes eas-cli@latest whoami
+
+      - name: Install project dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate the project
+        run: |
+          npx tsc --noEmit
+          npx expo-doctor@latest
+
+      - name: Link or create the EAS project
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes eas-cli@latest init --force --non-interactive
+          npx --yes eas-cli@latest project:info --non-interactive
+
+      - name: Build signed iOS production binary
+        id: eas_build
+        shell: bash
+        run: |
+          set -o pipefail
+          npx --yes eas-cli@latest build \
+            --platform ios \
+            --profile production \
+            --non-interactive \
+            --wait \
+            --json | tee eas-ios-production-result.json
+
+      - name: Export build metadata
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p build/eas-ios
+          if [ -f eas-ios-production-result.json ]; then
+            cp eas-ios-production-result.json build/eas-ios/
+            node - <<'NODE'
+          const fs = require('fs');
+          const input = 'eas-ios-production-result.json';
+          const output = 'build/eas-ios/build-summary.txt';
+          try {
+            const raw = fs.readFileSync(input, 'utf8').trim();
+            const parsed = JSON.parse(raw);
+            const build = Array.isArray(parsed) ? parsed[0] : parsed;
+            const lines = [
+              `Status=${build.status || 'unknown'}`,
+              `BuildID=${build.id || ''}`,
+              `BuildDetailsURL=${build.buildDetailsPageUrl || ''}`,
+              `ArtifactURL=${build.artifacts?.buildUrl || ''}`,
+              `Platform=${build.platform || 'IOS'}`,
+              `Profile=production`,
+            ];
+            fs.writeFileSync(output, `${lines.join('\n')}\n`);
+
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, '## KMK Paris — signed iOS production build\n');
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- Status: ${build.status || 'unknown'}\n`);
+            if (build.id) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- Build ID: \`${build.id}\`\n`);
+            if (build.buildDetailsPageUrl) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- [Open the EAS build](${build.buildDetailsPageUrl})\n`);
+            if (build.artifacts?.buildUrl) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- [Download the signed iOS binary](${build.artifacts.buildUrl})\n`);
+          } catch (error) {
+            fs.writeFileSync(output, `Status=unparsed\nError=${error.message}\n`);
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, '## KMK Paris — EAS response could not be parsed\n');
+          }
+          NODE
+          fi
+
+      - name: Upload EAS build result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmk-paris-eas-ios-production-result
+          path: build/eas-ios/**
+          if-no-files-found: warn
+          retention-days: 14
