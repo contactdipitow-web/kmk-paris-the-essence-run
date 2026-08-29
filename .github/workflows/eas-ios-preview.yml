@@ -1,0 +1,98 @@
+name: Build iOS preview with EAS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/eas-ios-preview.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kmk-ios-preview
+  cancel-in-progress: false
+
+jobs:
+  build-ios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CI: "1"
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify Expo authentication
+        shell: bash
+        run: |
+          if [ -z "${EXPO_TOKEN}" ]; then
+            echo "::error::Le secret GitHub EXPO_TOKEN est absent de ce dépôt."
+            exit 1
+          fi
+          npx --yes eas-cli@latest whoami
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate TypeScript and Expo project
+        run: |
+          npx tsc --noEmit
+          npx expo-doctor@latest
+
+      - name: Link or create the EAS project
+        run: |
+          npx --yes eas-cli@latest init --force --non-interactive
+          git add app.json
+          git -c user.name="EAS Build Bot" -c user.email="actions@github.com" commit -m "ci: link EAS project for iOS build" || true
+
+      - name: Build signed iOS preview
+        shell: bash
+        run: |
+          set -o pipefail
+          npx --yes eas-cli@latest build \
+            --platform ios \
+            --profile preview \
+            --non-interactive \
+            --wait \
+            --json | tee eas-build-result.json
+
+      - name: Publish build details
+        if: always()
+        shell: bash
+        run: |
+          if [ -f eas-build-result.json ]; then
+            echo "## KMK Paris — iOS preview" >> "$GITHUB_STEP_SUMMARY"
+            node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const fs = require('fs');
+          try {
+            const raw = fs.readFileSync('eas-build-result.json', 'utf8').trim();
+            const parsed = JSON.parse(raw);
+            const build = Array.isArray(parsed) ? parsed[0] : parsed;
+            console.log(`- Statut : ${build.status || 'inconnu'}`);
+            if (build.id) console.log(`- Build ID : \`${build.id}\``);
+            if (build.buildDetailsPageUrl) console.log(`- [Ouvrir le build Expo](${build.buildDetailsPageUrl})`);
+            if (build.artifacts?.buildUrl) console.log(`- [Installer le fichier iOS](${build.artifacts.buildUrl})`);
+          } catch (error) {
+            console.log('- Le résultat EAS brut est disponible dans les logs du workflow.');
+          }
+          NODE
+          fi
+
+      - name: Upload EAS result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eas-ios-build-result
+          path: eas-build-result.json
+          if-no-files-found: ignore
+          retention-days: 7
