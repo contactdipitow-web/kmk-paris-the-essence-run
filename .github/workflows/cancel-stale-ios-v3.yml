@@ -1,0 +1,22 @@
+name: Release stale KMK iOS Simulator runner
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/cancel-stale-ios-v3.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kmk-ios-simulator-launch-v3
+  cancel-in-progress: true
+
+jobs:
+  release-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release stale macOS run
+        run: echo "The stale V3 simulator run has been superseded by the bounded V4 workflow."
