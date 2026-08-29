@@ -8,6 +8,8 @@ from pathlib import Path
 root = Path(__file__).resolve().parents[1]
 chunk_dir = root / "Tools" / ".bootstrap_chunks"
 payload = "".join(path.read_text(encoding="utf-8").strip() for path in sorted(chunk_dir.glob("chunk*.txt")))
+if len(payload) != 47528:
+    raise RuntimeError(f"Unexpected bootstrap payload length: {len(payload)}")
 data = base64.b64decode(payload)
 with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
     root_resolved = root.resolve()
