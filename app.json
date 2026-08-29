@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "KMK Paris — The Essence Run",
+    "slug": "kmk-paris-the-essence-run",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.kmkparis.theessencerun",
+      "buildNumber": "1"
+    },
+    "android": {
+      "package": "com.kmkparis.theessencerun"
+    }
+  }
+}
