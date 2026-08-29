@@ -188,7 +188,7 @@ export default function App() {
           <ParisSkyline />
           <View style={[styles.laneLine, { left: LANE_WIDTH }]} />
           <View style={[styles.laneLine, { left: LANE_WIDTH * 2 }]} />
-          <View style={[styles.horizonGlow]} />
+          <View style={styles.horizonGlow} />
 
           {entities.map((entity) => (
             <View
@@ -468,7 +468,11 @@ const styles = StyleSheet.create({
   legs: { width: 31, flexDirection: 'row', justifyContent: 'space-between' },
   leg: { width: 12, height: 17, borderBottomLeftRadius: 4, borderBottomRightRadius: 4, backgroundColor: '#23211D' },
   overlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
     backgroundColor: 'rgba(8,8,6,0.88)',
     alignItems: 'center',
     justifyContent: 'center',
