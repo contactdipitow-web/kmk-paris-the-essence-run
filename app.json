@@ -10,6 +10,7 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.kmkparis.theessencerun",
       "buildNumber": "1",
+      "appleTeamId": "M3BQY9VGY2",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
