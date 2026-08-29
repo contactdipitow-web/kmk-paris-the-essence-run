@@ -21,8 +21,12 @@ jobs:
     timeout-minutes: 150
     env:
       CI: "1"
-      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       EXPO_NO_GIT_STATUS: "1"
+      EXPO_TOKEN_PRIMARY: ${{ secrets.EXPO_TOKEN }}
+      EXPO_TOKEN_EAS: ${{ secrets.EAS_TOKEN }}
+      EXPO_TOKEN_ACCESS: ${{ secrets.EXPO_ACCESS_TOKEN }}
+      EXPO_TOKEN_CLI: ${{ secrets.EXPO_CLI_TOKEN }}
+      EXPO_TOKEN_AUTH: ${{ secrets.EXPO_AUTH_TOKEN }}
 
     steps:
       - name: Checkout KMK Paris
@@ -33,15 +37,32 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Verify Expo authentication
+      - name: Resolve existing Expo authentication
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${EXPO_TOKEN:-}" ]; then
-            echo "::error title=Expo authentication missing::Repository secret EXPO_TOKEN is not configured."
+          if [ -n "${EXPO_TOKEN_PRIMARY:-}" ]; then
+            echo "EXPO_TOKEN=$EXPO_TOKEN_PRIMARY" >> "$GITHUB_ENV"
+            echo "Expo authentication source: EXPO_TOKEN"
+          elif [ -n "${EXPO_TOKEN_EAS:-}" ]; then
+            echo "EXPO_TOKEN=$EXPO_TOKEN_EAS" >> "$GITHUB_ENV"
+            echo "Expo authentication source: EAS_TOKEN"
+          elif [ -n "${EXPO_TOKEN_ACCESS:-}" ]; then
+            echo "EXPO_TOKEN=$EXPO_TOKEN_ACCESS" >> "$GITHUB_ENV"
+            echo "Expo authentication source: EXPO_ACCESS_TOKEN"
+          elif [ -n "${EXPO_TOKEN_CLI:-}" ]; then
+            echo "EXPO_TOKEN=$EXPO_TOKEN_CLI" >> "$GITHUB_ENV"
+            echo "Expo authentication source: EXPO_CLI_TOKEN"
+          elif [ -n "${EXPO_TOKEN_AUTH:-}" ]; then
+            echo "EXPO_TOKEN=$EXPO_TOKEN_AUTH" >> "$GITHUB_ENV"
+            echo "Expo authentication source: EXPO_AUTH_TOKEN"
+          else
+            echo "::error title=Expo authentication missing::None of EXPO_TOKEN, EAS_TOKEN, EXPO_ACCESS_TOKEN, EXPO_CLI_TOKEN or EXPO_AUTH_TOKEN is configured as a repository or organization secret."
             exit 2
           fi
-          npx --yes eas-cli@latest whoami
+
+      - name: Verify Expo account
+        run: npx --yes eas-cli@latest whoami
 
       - name: Install project dependencies
         run: npm install --no-audit --no-fund
