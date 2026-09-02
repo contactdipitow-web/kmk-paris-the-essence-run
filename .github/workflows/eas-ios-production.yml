@@ -1,10 +1,15 @@
-name: Build signed KMK Paris iOS app with EAS
+name: Build and submit KMK Paris iOS with EAS
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
+      - "app.json"
+      - "eas.json"
+      - "App.tsx"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/eas-ios-production.yml"
 
 permissions:
@@ -16,7 +21,7 @@ concurrency:
 
 jobs:
   build-ios-production:
-    name: Build signed iOS production app
+    name: Build and submit iOS production app
     runs-on: ubuntu-latest
     timeout-minutes: 150
     env:
@@ -79,7 +84,7 @@ jobs:
           npx --yes eas-cli@latest init --force --non-interactive
           npx --yes eas-cli@latest project:info --non-interactive
 
-      - name: Build signed iOS production binary
+      - name: Build signed iOS production binary and auto-submit
         id: eas_build
         shell: bash
         run: |
@@ -87,11 +92,12 @@ jobs:
           npx --yes eas-cli@latest build \
             --platform ios \
             --profile production \
+            --auto-submit \
             --non-interactive \
             --wait \
             --json | tee eas-ios-production-result.json
 
-      - name: Export build metadata
+      - name: Export build and submission metadata
         if: always()
         shell: bash
         run: |
@@ -113,16 +119,18 @@ jobs:
               `ArtifactURL=${build.artifacts?.buildUrl || ''}`,
               `Platform=${build.platform || 'IOS'}`,
               `Profile=production`,
+              `AutoSubmit=enabled`,
             ];
             fs.writeFileSync(output, `${lines.join('\n')}\n`);
 
-            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, '## KMK Paris — signed iOS production build\n');
-            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- Status: ${build.status || 'unknown'}\n`);
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, '## KMK Paris — iOS production + App Store Connect\n');
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- Build status: ${build.status || 'unknown'}\n`);
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, '- App Store Connect auto-submit: enabled\n');
             if (build.id) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- Build ID: \`${build.id}\`\n`);
             if (build.buildDetailsPageUrl) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- [Open the EAS build](${build.buildDetailsPageUrl})\n`);
             if (build.artifacts?.buildUrl) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- [Download the signed iOS binary](${build.artifacts.buildUrl})\n`);
           } catch (error) {
-            fs.writeFileSync(output, `Status=unparsed\nError=${error.message}\n`);
+            fs.writeFileSync(output, `Status=unparsed\nError=${error.message}\nAutoSubmit=enabled\n`);
             fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, '## KMK Paris — EAS response could not be parsed\n');
           }
           NODE
