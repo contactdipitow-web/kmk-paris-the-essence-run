@@ -3,7 +3,7 @@
     "name": "KMK Paris — The Essence Run",
     "slug": "kmk-paris-the-essence-run",
     "owner": "blinkydating",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "ios": {
